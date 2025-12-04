@@ -831,18 +831,22 @@ public:
             BufStrides[i] = frame->GetPitch(planes[i]);
             totalSize += BufStrides[i] * frame->GetHeight(planes[i]);
         }
+
+        if (BITDEPTH > 8)
+            totalSize *= 2;
+
         Buffer = (uint8_t*)malloc(totalSize);
 
         if (BITDEPTH <= 8)
         {
-            BufDatas[0] = Buffer;
-            BufDatas[1] = BufDatas[0] + BufStrides[0] * heightY;
-            BufDatas[2] = BufDatas[1] + BufStrides[1] * heightUV;
-
+            uint8_t* currPtr = Buffer;
             for (int i = 0; i < 3; ++i)
             {
+                BufDatas[i] = currPtr;
+                currPtr += static_cast<size_t>(BufStrides[i]) * frame->GetHeight(planes[i]);
+
                 const uint8_t* p = frame->GetReadPtr(planes[i]);
-                memcpy(BufDatas[i], p, frame->GetPitch(planes[i]) * frame->GetHeight(planes[i]));
+                memcpy(BufDatas[i], p, static_cast<size_t>(frame->GetPitch(planes[i]) * frame->GetHeight(planes[i])));
             }
         }
         else
@@ -850,22 +854,26 @@ public:
             for (int i = 0; i < 3; ++i)
                 BufStrides[i] /= 2;
 
-            BufDatas[0] = Buffer;
-            BufDatas[1] = BufDatas[0] + BufStrides[0] * heightY;
-            BufDatas[2] = BufDatas[1] + BufStrides[1] * heightUV;
-            BufDatas2[0] = BufDatas[2] + BufStrides[2] * heightUV;
-            BufDatas2[1] = BufDatas2[0] + BufStrides[0] * vi.height;
-            BufDatas2[2] = BufDatas2[1] + BufStrides[1] * heightUV;
+            uint8_t* currPtr = Buffer;
+
+            for (int i = 0; i < 3; ++i)
+            {
+                BufDatas[i] = currPtr;
+                currPtr += static_cast<size_t>(BufStrides[i] * frame->GetHeight(planes[i]));
+            }
+
+            for (int i = 0; i < 3; ++i)
+            {
+                BufDatas2[i] = currPtr;
+                currPtr += static_cast<size_t>(BufStrides[i] * frame->GetHeight(planes[i]));
+            }
 
             for (int i = 0; i < 3; ++i)
             {
                 const uint8_t* p = frame->GetReadPtr(planes[i]);
                 int srcStride = frame->GetPitch(planes[i]);
-
                 int wEnd = frame->GetRowSize(planes[i]) / 2;
                 int hEnd = frame->GetHeight(planes[i]);
-                uint8_t* pDst = BufDatas[i];
-                uint8_t* pDst2 = BufDatas2[i];
 
                 for (int h = 0; h < hEnd; ++h)
                 {
@@ -898,12 +906,22 @@ public:
             subpic2.bpp = 8;
         }
 
-        if (BITDEPTH <= 8)
-            subpic.type = vi.pixel_type == VideoInfo::CS_YV12 ? (s_fSwapUV ? MSP_IYUV : MSP_YV12) :
-            vi.pixel_type == VideoInfo::CS_IYUV ? (s_fSwapUV ? MSP_YV12 : MSP_IYUV) :
-            -1;
-        else
-            subpic.type = subpic2.type = s_fSwapUV ? MSP_IYUV : MSP_YV12;
+        int mspType = -1;
+
+        if (vi.Is444())
+            mspType = MSP_YV24;
+        else if (vi.Is422())
+            mspType = MSP_YV16;
+        else if (vi.IsYV12() || vi.pixel_type == VideoInfo::CS_IYUV)
+            mspType = s_fSwapUV ? MSP_IYUV : MSP_YV12;
+
+        if (mspType == -1)
+            mspType = MSP_YV12;
+
+        subpic.type = mspType;
+
+        if (BITDEPTH > 8)
+            subpic2.type = mspType;
     }
 
     void WriteTo(PVideoFrame& frame) override
@@ -1407,7 +1425,15 @@ namespace VapourSynth {
 			subpic.bitsU = BufDatas[1];
 			subpic.bitsV = BufDatas[2];
 			subpic.bpp = 8;
-			subpic.type = MSP_YV12;
+
+            int mspType = MSP_YV12;
+
+            if (d->vi->format->subSamplingW == 0 && d->vi->format->subSamplingH == 0)
+                mspType = MSP_YV24;
+            else if (d->vi->format->subSamplingW == 1 && d->vi->format->subSamplingH == 0)
+                mspType = MSP_YV16;
+
+            subpic.type = mspType;
 
             if (BITDEPTH > 8)
             {
@@ -1419,7 +1445,7 @@ namespace VapourSynth {
                 subpic2.bitsU = BufDatas2[1];
                 subpic2.bitsV = BufDatas2[2];
                 subpic2.bpp = 8;
-                subpic2.type = MSP_YV12;
+                subpic2.type = mspType;
             }
 		}
 

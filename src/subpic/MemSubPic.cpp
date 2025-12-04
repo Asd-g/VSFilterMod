@@ -252,11 +252,12 @@ STDMETHODIMP CMemSubPic::Unlock(RECT* pDirtyRect)
     if(m_rcDirty.IsRectEmpty())
         return S_OK;
 
-    if(m_spd.type == MSP_YUY2 || m_spd.type == MSP_YV12 || m_spd.type == MSP_IYUV || m_spd.type == MSP_AYUV)
+    if(m_spd.type == MSP_YUY2 || m_spd.type == MSP_YV12 || m_spd.type == MSP_IYUV || m_spd.type == MSP_AYUV || m_spd.type == MSP_YV16
+        || m_spd.type == MSP_YV24)
     {
         ColorConvInitOther(m_eYCbCrMatrix, m_eYCbCrRange);
 
-        if(m_spd.type == MSP_YUY2 || m_spd.type == MSP_YV12 || m_spd.type == MSP_IYUV)
+        if(m_spd.type == MSP_YUY2 || m_spd.type == MSP_YV12 || m_spd.type == MSP_IYUV || m_spd.type == MSP_YV16)
         {
             m_rcDirty.left &= ~1;
             m_rcDirty.right = (m_rcDirty.right + 1)&~1;
@@ -300,7 +301,7 @@ STDMETHODIMP CMemSubPic::Unlock(RECT* pDirtyRect)
             }
         }
     }
-    else if(m_spd.type == MSP_YUY2 || m_spd.type == MSP_YV12 || m_spd.type == MSP_IYUV)
+    else if(m_spd.type == MSP_YUY2 || m_spd.type == MSP_YV12 || m_spd.type == MSP_IYUV || m_spd.type == MSP_YV16)
     {
         for(; top < bottom ; top += m_spd.pitch)
         {
@@ -326,7 +327,7 @@ STDMETHODIMP CMemSubPic::Unlock(RECT* pDirtyRect)
             }
         }
     }
-    else if(m_spd.type == MSP_AYUV)
+    else if(m_spd.type == MSP_AYUV || m_spd.type == MSP_YV24)
     {
         for(; top < bottom ; top += m_spd.pitch)
         {
@@ -397,7 +398,7 @@ STDMETHODIMP CMemSubPic::AlphaBlt(RECT* pSrc, RECT* pDst, SubPicDesc* pTarget)
         {
             d = (BYTE*)dst.bits + dst.pitch * (rd.top - 1) + (rd.left * dst.bpp >> 3);
         }
-        else if(dst.type == MSP_YV12 || dst.type == MSP_IYUV)
+        else if(dst.type == MSP_YV12 || dst.type == MSP_IYUV || dst.type == MSP_YV16 || dst.type == MSP_YV24)
         {
             d = (BYTE*)dst.bits + dst.pitch * (rd.top - 1) + (rd.left * 8 >> 3);
         }
@@ -564,7 +565,7 @@ STDMETHODIMP CMemSubPic::AlphaBlt(RECT* pSrc, RECT* pDst, SubPicDesc* pTarget)
                 }
             }
         }
-        else if(dst.type == MSP_YV12 || dst.type == MSP_IYUV)
+        else if(dst.type == MSP_YV12 || dst.type == MSP_IYUV || dst.type == MSP_YV16)
         {
             BYTE* s2 = s;
             BYTE* s2end = s2 + w * 4;
@@ -577,6 +578,17 @@ STDMETHODIMP CMemSubPic::AlphaBlt(RECT* pSrc, RECT* pDst, SubPicDesc* pTarget)
                 }
             }
         }
+        else if (dst.type == MSP_YV24)
+        {
+            BYTE* s2 = s;
+            BYTE* s2end = s2 + w * 4;
+            BYTE* d2 = d;
+            for (; s2 < s2end; s2 += 4, d2++)
+            {
+                if (s2[3] < 0xff)
+                    d2[0] = (((d2[0] - RANGE[0][3]) * s2[3]) >> 8) + s2[2];
+            }
+        }
         else
         {
             return E_NOTIMPL;
@@ -585,16 +597,19 @@ STDMETHODIMP CMemSubPic::AlphaBlt(RECT* pSrc, RECT* pDst, SubPicDesc* pTarget)
 
     dst.pitch = abs(dst.pitch);
 
-    if(dst.type == MSP_YV12 || dst.type == MSP_IYUV)
+    if(dst.type == MSP_YV12 || dst.type == MSP_IYUV || dst.type == MSP_YV16 || dst.type == MSP_YV24)
     {
-        int h2 = h / 2;
+        int h_loop = h;
+        if (dst.type == MSP_YV12 || dst.type == MSP_IYUV)
+            h_loop = h / 2;
 
         if(!dst.pitchUV)
         {
-            dst.pitchUV = dst.pitch / 2;
+            if (dst.type == MSP_YV24)
+                dst.pitchUV = dst.pitch;
+            else
+                dst.pitchUV = dst.pitch / 2;
         }
-
-        int sizep4 = dst.pitchUV * dst.h / 2;
 
         BYTE* ss[2];
         ss[0] = (BYTE*)src.bits + src.pitch * rs.top + rs.left * 4;
@@ -603,7 +618,12 @@ STDMETHODIMP CMemSubPic::AlphaBlt(RECT* pSrc, RECT* pDst, SubPicDesc* pTarget)
         if(!dst.bitsU || !dst.bitsV)
         {
             dst.bitsU = (BYTE*)dst.bits + dst.pitch * dst.h;
-            dst.bitsV = dst.bitsU + dst.pitchUV * dst.h / 2;
+            
+            int u_height = dst.h;
+            if (dst.type == MSP_YV12 || dst.type == MSP_IYUV)
+                u_height = dst.h / 2;
+
+            dst.bitsV = dst.bitsU + dst.pitchUV * u_height;
 
             if(dst.type == MSP_YV12)
             {
@@ -614,33 +634,68 @@ STDMETHODIMP CMemSubPic::AlphaBlt(RECT* pSrc, RECT* pDst, SubPicDesc* pTarget)
         }
 
         BYTE* dd[2];
-        dd[0] = dst.bitsU + dst.pitchUV * rd.top / 2 + rd.left / 2;
-        dd[1] = dst.bitsV + dst.pitchUV * rd.top / 2 + rd.left / 2;
+        int v_shift = (dst.type == MSP_YV12 || dst.type == MSP_IYUV) ? 1 : 0;
+        int h_shift = (dst.type == MSP_YV24) ? 0 : 1;
+
+        dd[0] = dst.bitsU + dst.pitchUV * (rd.top >> v_shift) + (rd.left >> h_shift);
+        dd[1] = dst.bitsV + dst.pitchUV * (rd.top >> v_shift) + (rd.left >> h_shift);
 
         if(rd.top > rd.bottom)
         {
-            dd[0] = dst.bitsU + dst.pitchUV * (rd.top / 2 - 1) + rd.left / 2;
-            dd[1] = dst.bitsV + dst.pitchUV * (rd.top / 2 - 1) + rd.left / 2;
+            dd[0] = dst.bitsU + dst.pitchUV * ((rd.top >> v_shift) - 1) + (rd.left >> h_shift);
+            dd[1] = dst.bitsV + dst.pitchUV * ((rd.top >> v_shift) - 1) + (rd.left >> h_shift);
             dst.pitchUV = -dst.pitchUV;
         }
+
+        int src_pitch_step = src.pitch;
+        if (dst.type == MSP_YV12 || dst.type == MSP_IYUV)
+            src_pitch_step *= 2;
 
         for(ptrdiff_t i = 0; i < 2; i++)
         {
             s = ss[i];
             d = dd[i];
             BYTE* is = ss[1-i];
-            for(ptrdiff_t j = 0; j < h2; j++, s += src.pitch * 2, d += dst.pitchUV, is += src.pitch * 2)
+
+            if (dst.type == MSP_YV24 && i == 1)
+                s = ss[0];
+
+            for(ptrdiff_t j = 0; j < h_loop; j++, s += src_pitch_step, d += dst.pitchUV, is += src_pitch_step)
             {
                 BYTE* s2 = s;
                 BYTE* s2end = s2 + w * 4;
                 BYTE* d2 = d;
                 BYTE* is2 = is;
-                for(; s2 < s2end; s2 += 8, d2++, is2 += 8)
+                if (dst.type == MSP_YV24)
                 {
-                    unsigned int ia = (s2[3] + s2[3+src.pitch] + is2[3] + is2[3+src.pitch]) >> 2;
-                    if(ia < 0xff)
+                    int offset = (i == 0) ? 1 : 0;
+
+                    for (; s2 < s2end; s2 += 4, d2++)
                     {
-                        *d2 = (((*d2 - RANGE[i+1][3]) * ia) >> 8) + ((s2[0] + s2[src.pitch]) >> 1);
+                        if (s2[3] < 0xff)
+                            *d2 = (((*d2 - RANGE[i + 1][3]) * s2[3]) >> 8) + s2[offset];
+                    }
+                }
+                else
+                {
+                    for (; s2 < s2end; s2 += 8, d2++, is2 += 8)
+                    {
+                        unsigned int ia;
+                        int val;
+                        
+                        if (dst.type == MSP_YV16)
+                        {
+                            ia = (s2[3] + is2[3]) >> 1;
+                            val = s2[0];
+                        }
+                        else
+                        {
+                            ia = (s2[3] + s2[3 + src.pitch] + is2[3] + is2[3 + src.pitch]) >> 2;
+                            val = (s2[0] + s2[src.pitch]) >> 1;
+                        }
+
+                        if (ia < 0xff)
+                            *d2 = (((*d2 - RANGE[i + 1][3]) * ia) >> 8) + val;
                     }
                 }
             }
