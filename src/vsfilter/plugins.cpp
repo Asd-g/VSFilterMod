@@ -43,6 +43,31 @@ std::unique_ptr<wchar_t[]> Utf8ToWideChar(const char* s_ansi)
     return w_string;
 }
 
+int DetectMatrix(int isoValue, int width, int height)
+{
+    switch (isoValue)
+    {
+    case 1: return YCbCrMatrix_BT709;
+    case 5:
+    case 6: return YCbCrMatrix_BT601;
+    case 9:
+    case 10: return YCbCrMatrix_BT2020;
+    default: break;
+    }
+
+    if (height >= 2160)
+        return YCbCrMatrix_BT2020;
+    else if (height >= 720 || width >= 1280)
+        return YCbCrMatrix_BT709;
+    
+    return YCbCrMatrix_BT601;
+}
+
+int DetectRange(int isoValue)
+{
+    return (isoValue == 0) ? YCbCrRange_PC : YCbCrRange_TV;
+}
+
 //
 // Generic interface
 //
@@ -62,11 +87,12 @@ protected:
     CComPtr<ISubPicProvider> m_pSubPicProvider;
     DWORD_PTR m_SubPicProviderId;
 
+public:
     CSimpleTextSubtitle::YCbCrMatrix m_script_selected_yuv;
     CSimpleTextSubtitle::YCbCrRange m_script_selected_range;
 
-public:
-    CFilter() : m_fps(-1), m_SubPicProviderId(0)
+    CFilter() : m_fps(-1), m_SubPicProviderId(0), m_script_selected_yuv(CSimpleTextSubtitle::YCbCrMatrix_AUTO),
+        m_script_selected_range(CSimpleTextSubtitle::YCbCrRange_AUTO)
     {
         CAMThread::Create();
     }
@@ -974,11 +1000,13 @@ public:
 class CAvisynthFilter : public GenericVideoFilter, virtual public CFilter
 {
     bool accurate;
+    const bool v8;
 
 public:
     VFRTranslator *vfr;
 
-    CAvisynthFilter(PClip c, IScriptEnvironment* env, VFRTranslator *_vfr = 0, bool _accurate = false) : GenericVideoFilter(c), vfr(_vfr), accurate(_accurate) {}
+    CAvisynthFilter(PClip c, IScriptEnvironment* env, VFRTranslator *_vfr = 0, bool _accurate = false)
+        : GenericVideoFilter(c), vfr(_vfr), accurate(_accurate), v8(env->FunctionExists("propShow")) {}
 
     int __stdcall SetCacheHints(int cachehints, int frame_range) override
     {
@@ -988,6 +1016,46 @@ public:
     PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env)
     {
         PVideoFrame frame = child->GetFrame(n, env);
+
+        if (m_script_selected_yuv == YCbCrMatrix_AUTO || m_script_selected_range == YCbCrRange_AUTO)
+        {
+            if (v8)
+            {
+                int64_t val = -1;
+                const AVSMap* props = env->getFramePropsRO(frame);
+                int error;
+
+                if (m_script_selected_yuv == YCbCrMatrix_AUTO)
+                {
+                    val = env->propGetInt(props, "_Matrix", 0, &error);
+
+                    if (error)
+                        val = -1;
+
+                    m_script_selected_yuv =
+                        static_cast<CSimpleTextSubtitle::YCbCrMatrix>(DetectMatrix(static_cast<int>(val), vi.width, vi.height));
+                }
+
+                if (m_script_selected_range == YCbCrRange_AUTO)
+                {
+                    val = env->propGetInt(props, "_ColorRange", 0, &error);
+
+                    if (error)
+                        val = -1;
+
+                    m_script_selected_range =
+                        static_cast<CSimpleTextSubtitle::YCbCrRange>(DetectRange(static_cast<int>(val)));
+                }
+            }
+            else
+            {
+                if (m_script_selected_yuv == YCbCrMatrix_AUTO)
+                    m_script_selected_yuv = static_cast<CSimpleTextSubtitle::YCbCrMatrix>(DetectMatrix(-1, vi.width, vi.height));
+
+                if (m_script_selected_range == YCbCrRange_AUTO)
+                    m_script_selected_range = static_cast<CSimpleTextSubtitle::YCbCrRange>(YCbCrRange_TV);
+            }
+        }
 
         env->MakeWritable(&frame);
 
@@ -1575,6 +1643,37 @@ namespace VapourSynth {
             vsapi->requestFrameFilter(n, d->node, frameCtx);
         } else if (activationReason == arAllFramesReady) {
             const VSFrameRef * src = vsapi->getFrameFilter(n, d->node, frameCtx);
+
+            CFilter* pFilter = d->textsub ? reinterpret_cast<CFilter*>(d->textsub) : reinterpret_cast<CFilter*>(d->vobsub);
+
+            if (pFilter->m_script_selected_yuv == YCbCrMatrix_AUTO || pFilter->m_script_selected_range == YCbCrRange_AUTO)
+            {
+                const VSMap* props = vsapi->getFramePropsRO(src);
+                int err;
+
+                if (pFilter->m_script_selected_yuv == YCbCrMatrix_AUTO)
+                {
+                    int64_t val = vsapi->propGetInt(props, "_Matrix", 0, &err);
+
+                    if (err)
+                        val = -1;
+
+                    pFilter->m_script_selected_yuv =
+                        static_cast<CSimpleTextSubtitle::YCbCrMatrix>(DetectMatrix(static_cast<int>(val), d->vi->width, d->vi->height));
+                }
+                
+                if (pFilter->m_script_selected_range == YCbCrRange_AUTO)
+                {
+                    int64_t val = vsapi->propGetInt(props, "_ColorRange", 0, &err);
+
+                    if (err)
+                        val = -1;
+
+                    if (pFilter->m_script_selected_range == YCbCrRange_AUTO)
+                        pFilter->m_script_selected_range =
+                        static_cast<CSimpleTextSubtitle::YCbCrRange>(DetectRange(static_cast<int>(val)));
+                }
+            }
             VSFrameRef * dst = vsapi->copyFrame(src, core);
 
 			std::unique_ptr<VSFFrameBuf> frameBuf;

@@ -82,9 +82,18 @@ bool fColorConvInitOK = false;
 const float(*MATRIX)[4] = MATRIX_BT_601;
 const float(*MATRIX_INV)[4] = MATRIX_BT_601_INV;
 const int(*RANGE)[4] = YUV_TV;
+
+static int g_lastMatrix = -1;
+static int g_lastRange = -1;
+
 void ColorConvInitOther(int inYCbCrMatrix, int inYCbCrRange)
 {
-    if(fColorConvInitOK) return;
+    if(fColorConvInitOK && g_lastMatrix == inYCbCrMatrix && g_lastRange == inYCbCrRange)
+        return;
+
+    g_lastMatrix = inYCbCrMatrix;
+    g_lastRange = inYCbCrRange;
+
     if (inYCbCrMatrix == YCbCrMatrix_BT601)
     {
         MATRIX = MATRIX_BT_601;
